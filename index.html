@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html lang="hr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Robi</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    background: #07090f;
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    font-family: system-ui, -apple-system, sans-serif;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    touch-action: none;
+  }
+  .hud {
+    position: fixed;
+    top: 14px;
+    left: 14px;
+    right: 14px;
+    max-width: 480px;
+    color: rgba(255,255,255,0.78);
+    background: rgba(15, 20, 32, 0.76);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 12px;
+    padding: 10px 14px;
+    font-size: 12px;
+    line-height: 1.45;
+    pointer-events: auto;
+    backdrop-filter: blur(8px);
+    z-index: 10;
+    transition: opacity 0.2s ease;
+  }
+  .hud.hidden {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .btn-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+  }
+  .hud button {
+    background: #3b82f6;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .hud button.on {
+    background: #10b981;
+  }
+  .bottom-bar {
+    position: fixed;
+    left: 14px;
+    right: 14px;
+    bottom: 20px;
+    display: flex;
+    flex-direction: row;
+    justify-content: flex-start;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    z-index: 12;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(10px);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+  }
+  .bottom-bar.visible {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+  }
+  .quick-btn {
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 12px;
+    padding: 10px 16px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  }
+  .quick-btn.yt {
+    background: rgba(220, 38, 38, 0.9);
+  }
+  .quick-btn.radio {
+    background: rgba(37, 99, 235, 0.9);
+  }
+  .quick-btn.gemini {
+    background: rgba(124, 58, 237, 0.9);
+  }
+  .quick-btn:active {
+    transform: scale(0.97);
+  }
+</style>
+</head>
+<body>
+<div class="hud" id="hud">
+  <div id="status">Robi · Zvuk: Isključen · Pokret: Isključen</div>
+  <div style="opacity:0.7">Glas: sat, temp i gumbi na 5 s · 1 prst: pogled · Tap: treptaj</div>
+  <div class="btn-row">
+    <button id="fsBtn">Fullscreen</button>
+    <button id="micBtn">Zvuk (Mikrofon)</button>
+    <button id="camBtn">Pokret (Kamera)</button>
+  </div>
+</div>
+
+<div class="bottom-bar" id="bottomBar">
+  <button class="quick-btn yt" id="quickYtBtn">YouTube</button>
+  <button class="quick-btn radio" id="quickRadioBtn">Tranzistor</button>
+  <button class="quick-btn gemini" id="quickGeminiBtn">Gemini</button>
+</div>
+
+<canvas id="c"></canvas>
+
+<script>
+const RADIO_URL = 'https://radiostanica.com/hr';
+const GEMINI_URL = 'https://gemini.google.com';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const hud = document.getElementById('hud');
+const statusEl = document.getElementById('status');
+const fsBtn = document.getElementById('fsBtn');
+const micBtn = document.getElementById('micBtn');
+const camBtn = document.getElementById('camBtn');
+const bottomBar = document.getElementById('bottomBar');
+const quickYtBtn = document.getElementById('quickYtBtn');
+const quickRadioBtn = document.getElementById('quickRadioBtn');
+const quickGeminiBtn = document.getElementById('quickGeminiBtn');
+
+let w = 0, h = 0, dpr = 1;
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  w = window.innerWidth;
+  h = window.innerHeight;
+  canvas.width = Math.floor(w * dpr);
+  canvas.height = Math.floor(h * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Drži zaslon budnim
+let wakeLock = null;
+async function keepScreenAwake() {
+  try {
+    if (!('wakeLock' in navigator)) return;
+    if (wakeLock && !wakeLock.released) return;
+    wakeLock = await navigator.wakeLock.request('screen');
+  } catch {}
+}
+keepScreenAwake();
+window.addEventListener('pointerdown', keepScreenAwake, { passive: true });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') keepScreenAwake();
+});
+
+fsBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  keepScreenAwake();
+  hud.classList.add('hidden');
+  const target = document.documentElement;
+  try {
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+      if (target.requestFullscreen) await target.requestFullscreen();
+      else if (target.webkitRequestFullscreen) await target.webkitRequestFullscreen();
+    }
+  } catch {}
+});
+
+document.addEventListener('fullscreenchange', () => {
+  const isFs = Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+  if (!isFs) hud.classList.remove('hidden');
+});
+
+quickYtBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  greetBack();
+  window.open('https://m.youtube.com', '_blank', 'noopener');
+});
+
+quickRadioBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  greetBack();
+  window.open(RADIO_URL, '_blank', 'noopener');
+});
+
+quickGeminiBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  greetBack();
+  window.open(GEMINI_URL, '_blank', 'noopener');
+});
+
+// Sat, temperatura i donji gumbi (pojavljuju se na 5 sekundi kad čuje glas)
+let currentTempC = null;
+let infoVisibleUntil = 0;
+let infoAlpha = 0;
+const INFO_SHOW_MS = 5000;
+
+function showVoiceOverlay(now = performance.now()) {
+  infoVisibleUntil = now + INFO_SHOW_MS;
+}
+
+function updateBottomBarVisibility(now) {
+  const shouldShow = now < infoVisibleUntil;
+  bottomBar.classList.toggle('visible', shouldShow);
+}
+
+function formatTimeNow() {
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+function getTempLabel() {
+  return currentTempC !== null ? `${Math.round(currentTempC)}°C` : '--°C';
+}
+
+async function fetchTemperature() {
+  try {
+    const url = 'https://api.open-meteo.com/v1/forecast?latitude=45.815&longitude=15.9819&current=temperature_2m&timezone=Europe%2FZagreb';
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('HTTP');
+    const data = await res.json();
+    if (data?.current?.temperature_2m !== undefined) {
+      currentTempC = Number(data.current.temperature_2m);
+    }
+  } catch {}
+}
+
+fetchTemperature();
+setInterval(fetchTemperature, 15 * 60 * 1000);
+
+const pointers = new Map();
+let targetX = null, targetY = null;
+let lookX = 0, lookY = 0;
+let pupilScale = 1, targetPupilScale = 1;
+let blinkProgress = 0;
+let winkLeft = 0, winkRight = 0;
+let mood = 'Neutralno';
+let moodLift = 0.25, targetMoodLift = 0.25;
+let longPressTimer = null;
+let holdingClosed = false;
+let lastTapTime = 0;
+let downPos = { x: 0, y: 0, time: 0 };
+let pinchStartDist = null;
+let pinchStartScale = 1;
+
+// Nasumično pomicanje obrva
+let nextBrowAt = performance.now() + 1300;
+let targetBrowL = 0, targetBrowR = 0;
+let browL = 0, browR = 0;
+
+// Samoća (5 minuta)
+const ALONE_TIMEOUT_MS = 5 * 60 * 1000;
+let lastInteractionAt = performance.now();
+let angryFromAlone = false;
+let calmTimer = null;
+
+// Stanje zvuka (mikrofon)
+let micStream = null;
+let micSource = null;
+let audioCtx = null;
+let analyser = null;
+let micData = null;
+let micOn = false;
+let micStatus = 'Isključen';
+let soundLevel = 0;
+let prevSoundLevel = 0;
+let noiseFloor = 0.015;
+let clapCooldown = 0;
+let loudCooldown = 0;
+
+// Stanje pokreta ispred kamere
+let camVideo = null;
+let motionCanvas = null;
+let motionCtx = null;
+let prevFrame = null;
+let camOn = false;
+let camStatus = 'Isključen';
+let motionLookX = 0;
+let motionLookY = 0;
+let hasMotion = false;
+let lastMotionTime = 0;
+
+function updateStatus() {
+  statusEl.textContent = `Robi (${mood}) · Zvuk: ${micStatus} · Pokret: ${camStatus}`;
+}
+
+function setMood(newMood, lift, fromAlone = false) {
+  mood = newMood;
+  targetMoodLift = lift;
+  angryFromAlone = fromAlone;
+  updateStatus();
+}
+
+function greetBack(now = performance.now()) {
+  const wasAlone = angryFromAlone || mood === 'Ljutito';
+  lastInteractionAt = now;
+  if (wasAlone) {
+    setMood('Sretno', 0.9, false);
+    clearTimeout(calmTimer);
+    calmTimer = setTimeout(() => {
+      if (mood === 'Sretno') setMood('Neutralno', 0.25, false);
+    }, 2400);
+  }
+}
+
+function triggerBlink(side = 'both') {
+  if (side === 'left') winkLeft = 1;
+  else if (side === 'right') winkRight = 1;
+  else blinkProgress = 1;
+}
+
+async function stopMicrophone() {
+  try {
+    if (micSource) {
+      micSource.disconnect();
+      micSource = null;
+    }
+    if (analyser) {
+      analyser.disconnect();
+      analyser = null;
+    }
+    if (micStream) {
+      micStream.getTracks().forEach((track) => track.stop());
+      micStream = null;
+    }
+    if (audioCtx && audioCtx.state !== 'closed') {
+      await audioCtx.close();
+    }
+  } catch {}
+  audioCtx = null;
+  micData = null;
+  micOn = false;
+  soundLevel = 0;
+  prevSoundLevel = 0;
+  micStatus = 'Isključen';
+  micBtn.classList.remove('on');
+  micBtn.textContent = 'Zvuk (Mikrofon)';
+  updateStatus();
+}
+
+// Uključivanje / isključivanje mikrofona
+micBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  keepScreenAwake();
+  greetBack();
+  if (micOn) {
+    await stopMicrophone();
+    return;
+  }
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      micStatus = 'Nije podržano';
+      updateStatus();
+      return;
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      },
+      video: false
+    });
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new AudioContextClass();
+    if (audioCtx.state === 'suspended') {
+      await audioCtx.resume();
+    }
+    micStream = stream;
+    micSource = audioCtx.createMediaStreamSource(stream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    micSource.connect(analyser);
+    micData = new Uint8Array(analyser.frequencyBinCount);
+    micOn = true;
+    micStatus = 'Aktivan';
+    micBtn.classList.add('on');
+    micBtn.textContent = 'Zvuk ON';
+    updateStatus();
+  } catch {
+    micStatus = 'Greška / dozvola';
+    updateStatus();
+  }
+});
+
+// Uključivanje kamere za praćenje pokreta očima
+camBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  keepScreenAwake();
+  greetBack();
+  if (camOn) return;
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      camStatus = 'Nije podržano';
+      updateStatus();
+      return;
+    }
+    let stream = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user' },
+        audio: false
+      });
+    } catch {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: false
+      });
+    }
+
+    camVideo = document.createElement('video');
+    camVideo.srcObject = stream;
+    camVideo.muted = true;
+    camVideo.playsInline = true;
+    await camVideo.play();
+
+    motionCanvas = document.createElement('canvas');
+    motionCanvas.width = 64;
+    motionCanvas.height = 48;
+    motionCtx = motionCanvas.getContext('2d', { willReadFrequently: true });
+
+    camOn = true;
+    camStatus = 'Aktivan';
+    camBtn.classList.add('on');
+    camBtn.textContent = 'Pokret ON';
+    updateStatus();
+  } catch {
+    camStatus = 'Greška / dozvola';
+    updateStatus();
+  }
+});
+
+function readSound(now) {
+  if (!micOn || !analyser || !micData) {
+    soundLevel *= 0.85;
+    prevSoundLevel = 0;
+    return;
+  }
+
+  analyser.getByteTimeDomainData(micData);
+  let sum = 0;
+  for (let i = 0; i < micData.length; i++) {
+    const v = (micData[i] - 128) / 128;
+    sum += v * v;
+  }
+  const rms = Math.sqrt(sum / micData.length);
+
+  if (rms < noiseFloor * 1.35) {
+    noiseFloor += (rms - noiseFloor) * 0.03;
+  }
+  const gate = Math.max(0.015, noiseFloor * 1.75);
+  const gatedRms = Math.max(0, rms - gate);
+  const level = Math.min(1, gatedRms * 28);
+
+  if (level > 0.08) {
+    lastInteractionAt = now;
+    showVoiceOverlay(now);
+  }
+
+  if (level > 0.28 && level - prevSoundLevel > 0.14 && now > clapCooldown) {
+    clapCooldown = now + 700;
+    triggerBlink('both');
+  }
+
+  if (level > 0.52 && now > loudCooldown && !holdingClosed) {
+    loudCooldown = now + 1600;
+    setMood('Iznenađeno', 0.6);
+    targetPupilScale = 1.45;
+    setTimeout(() => {
+      targetPupilScale = 1;
+      if (mood === 'Iznenađeno') setMood('Neutralno', 0.25);
+    }, 850);
+  }
+
+  prevSoundLevel = level;
+  const smoothRate = level > soundLevel ? 0.34 : 0.16;
+  soundLevel += (level - soundLevel) * smoothRate;
+}
+
+function readMotion(now) {
+  if (!camOn || !camVideo || camVideo.readyState < 2 || !motionCtx) return;
+
+  motionCtx.drawImage(camVideo, 0, 0, motionCanvas.width, motionCanvas.height);
+  const frame = motionCtx.getImageData(0, 0, motionCanvas.width, motionCanvas.height).data;
+
+  if (!prevFrame) {
+    prevFrame = new Uint8ClampedArray(frame);
+    return;
+  }
+
+  let diffSum = 0;
+  let weightedX = 0;
+  let weightedY = 0;
+  const mw = motionCanvas.width;
+  const mh = motionCanvas.height;
+
+  for (let y = 0; y < mh; y++) {
+    for (let x = 0; x < mw; x++) {
+      const idx = (y * mw + x) * 4;
+      const d =
+        Math.abs(frame[idx] - prevFrame[idx]) +
+        Math.abs(frame[idx + 1] - prevFrame[idx + 1]) +
+        Math.abs(frame[idx + 2] - prevFrame[idx + 2]);
+      if (d > 48) {
+        diffSum += d;
+        const nx = 1 - (x / mw) * 2;
+        const ny = (y / mh) * 2 - 1;
+        weightedX += nx * d;
+        weightedY += ny * d;
+      }
+    }
+  }
+
+  prevFrame.set(frame);
+
+  if (diffSum > 18000) {
+    const rawX = Math.max(-1, Math.min(1, weightedX / diffSum));
+    const rawY = Math.max(-1, Math.min(1, weightedY / diffSum));
+    motionLookX += (rawX - motionLookX) * 0.35;
+    motionLookY += (rawY - motionLookY) * 0.35;
+    hasMotion = true;
+    lastMotionTime = now;
+    greetBack(now);
+  } else if (hasMotion && now - lastMotionTime > 1200) {
+    motionLookX *= 0.92;
+    motionLookY *= 0.92;
+    if (Math.hypot(motionLookX, motionLookY) < 0.04) hasMotion = false;
+  }
+}
+
+function getEyeCenters() {
+  const spacing = Math.min(w * 0.23, 190);
+  const cy = h * 0.48;
+  const r = Math.min(w * 0.19, h * 0.19, 130);
+  return {
+    left: { x: w * 0.5 - spacing, y: cy, r },
+    right: { x: w * 0.5 + spacing, y: cy, r }
+  };
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  if (hud.classList.contains('hidden') && e.clientX < 130 && e.clientY < 90) {
+    hud.classList.remove('hidden');
+    return;
+  }
+
+  greetBack(performance.now());
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+  if (pointers.size === 1) {
+    downPos = { x: e.clientX, y: e.clientY, time: performance.now() };
+    targetX = e.clientX;
+    targetY = e.clientY;
+
+    clearTimeout(longPressTimer);
+    longPressTimer = setTimeout(() => {
+      holdingClosed = true;
+      setMood('Žmiri', -0.2);
+    }, 550);
+  } else if (pointers.size === 2) {
+    clearTimeout(longPressTimer);
+    const pts = Array.from(pointers.values());
+    pinchStartDist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y) || 1;
+    pinchStartScale = targetPupilScale;
+  }
+}, { passive: false });
+
+canvas.addEventListener('pointermove', (e) => {
+  if (!pointers.has(e.pointerId)) return;
+  e.preventDefault();
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+  if (pointers.size === 1) {
+    const dx = e.clientX - downPos.x;
+    const dy = e.clientY - downPos.y;
+    if (Math.hypot(dx, dy) > 10) clearTimeout(longPressTimer);
+    targetX = e.clientX;
+    targetY = e.clientY;
+  } else if (pointers.size === 2 && pinchStartDist) {
+    const pts = Array.from(pointers.values());
+    const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+    const ratio = dist / pinchStartDist;
+    targetPupilScale = Math.max(0.55, Math.min(1.65, pinchStartScale * ratio));
+    targetX = (pts[0].x + pts[1].x) * 0.5;
+    targetY = (pts[0].y + pts[1].y) * 0.5;
+  }
+}, { passive: false });
+
+function handlePointerEnd(e) {
+  const wasPresent = pointers.has(e.pointerId);
+  pointers.delete(e.pointerId);
+  clearTimeout(longPressTimer);
+
+  if (holdingClosed && pointers.size === 0) {
+    holdingClosed = false;
+    setMood('Neutralno', 0.25);
+  }
+
+  if (pointers.size < 2) {
+    pinchStartDist = null;
+  }
+
+  if (wasPresent && pointers.size === 0) {
+    const now = performance.now();
+    const dx = e.clientX - downPos.x;
+    const dy = e.clientY - downPos.y;
+    const dist = Math.hypot(dx, dy);
+    const dt = now - downPos.time;
+
+    if (dist < 12 && dt < 280) {
+      if (now - lastTapTime < 320) {
+        setMood('Iznenađeno', 0.55);
+        targetPupilScale = 1.5;
+        setTimeout(() => {
+          targetPupilScale = 1;
+          if (mood === 'Iznenađeno') setMood('Neutralno', 0.25);
+        }, 900);
+        lastTapTime = 0;
+      } else {
+        lastTapTime = now;
+        const eyes = getEyeCenters();
+        if (Math.hypot(e.clientX - eyes.left.x, e.clientY - eyes.left.y) < eyes.left.r * 1.2) {
+          triggerBlink('left');
+        } else if (Math.hypot(e.clientX - eyes.right.x, e.clientY - eyes.right.y) < eyes.right.r * 1.2) {
+          triggerBlink('right');
+        } else {
+          triggerBlink('both');
+        }
+      }
+    } else if (Math.abs(dy) > 75 && Math.abs(dy) > Math.abs(dx) * 1.3 && dt < 500) {
+      if (dy > 0) {
+        if (mood === 'Pospano') setMood('Ljutito', -0.75);
+        else setMood('Pospano', -0.2);
+      } else {
+        setMood('Sretno', 0.9);
+      }
+    }
+
+    targetX = null;
+    targetY = null;
+  }
+}
+
+canvas.addEventListener('pointerup', handlePointerEnd);
+canvas.addEventListener('pointercancel', handlePointerEnd);
+
+let nextBlinkAt = performance.now() + 3200;
+let nextSaccadeAt = performance.now() + 2100;
+let idleLookX = 0, idleLookY = 0;
+let prevTime = performance.now();
+
+function drawEye(cx, cy, r, isLeft, closeAmount) {
+  ctx.save();
+
+  const ry = r * 0.72;
+
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, r, ry, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#f1f5f9';
+  ctx.fill();
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = '#1e293b';
+  ctx.stroke();
+
+  ctx.clip();
+
+  const maxOffsetX = r * 0.42;
+  const maxOffsetY = ry * 0.35;
+  const px = cx + lookX * maxOffsetX;
+  const py = cy + lookY * maxOffsetY;
+  const soundPupilBoost = 1 + soundLevel * 0.25;
+  const irisR = r * 0.42 * (0.85 + 0.15 * pupilScale * soundPupilBoost);
+  const pupilR = irisR * 0.52 * pupilScale * soundPupilBoost;
+
+  ctx.beginPath();
+  ctx.arc(px, py, irisR, 0, Math.PI * 2);
+  ctx.fillStyle = mood === 'Ljutito' ? '#dc2626' : '#2563eb';
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(px, py, Math.max(6, pupilR), 0, Math.PI * 2);
+  ctx.fillStyle = '#090d16';
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(px - irisR * 0.32, py - irisR * 0.32, Math.max(4, irisR * 0.18), 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.fill();
+
+  const clampedClose = Math.max(0, Math.min(1, closeAmount));
+  const lidY = cy - ry * 1.05 + clampedClose * ry * 2.1;
+  ctx.beginPath();
+  ctx.rect(cx - r * 1.2, cy - ry * 1.3, r * 2.4, Math.max(0, lidY - (cy - ry * 1.3)));
+  ctx.fillStyle = '#0f172a';
+  ctx.fill();
+
+  if (mood === 'Ljutito') {
+    ctx.beginPath();
+    if (isLeft) {
+      ctx.moveTo(cx - r * 1.1, cy - ry * 1.1);
+      ctx.lineTo(cx + r * 1.1, cy - ry * 0.15);
+    } else {
+      ctx.moveTo(cx + r * 1.1, cy - ry * 1.1);
+      ctx.lineTo(cx - r * 1.1, cy - ry * 0.15);
+    }
+    ctx.lineTo(cx + (isLeft ? r * 1.1 : -r * 1.1), cy - ry * 1.3);
+    ctx.lineTo(cx + (isLeft ? -r * 1.1 : r * 1.1), cy - ry * 1.3);
+    ctx.closePath();
+    ctx.fillStyle = '#0f172a';
+    ctx.fill();
+  }
+
+  if (mood === 'Sretno') {
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + ry * 1.1, r * 1.15, ry * 0.65, 0, 0, Math.PI * 2);
+    ctx.fillStyle = '#0f172a';
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function drawEyebrows(eyes) {
+  const halfW = Math.min(eyes.left.r * 0.55, 62);
+  let baseLift = moodLift * 18 + soundLevel * 20;
+  if (mood === 'Iznenađeno') baseLift = 26 + soundLevel * 10;
+  if (mood === 'Ljutito') baseLift = -8 + soundLevel * 8;
+  if (mood === 'Pospano') baseLift = -10 + soundLevel * 8;
+
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineWidth = Math.max(6, eyes.left.r * 0.08);
+  ctx.strokeStyle = mood === 'Ljutito' ? '#ef4444' : '#e2e8f0';
+
+  const lx = eyes.left.x + lookX * 14;
+  const ly = eyes.left.y - eyes.left.r * 0.9 - (baseLift + browL) + lookY * 8 + soundLevel * 4;
+  const lInnerDrop = mood === 'Ljutito' ? 14 : (mood === 'Iznenađeno' ? -8 : 0);
+  ctx.beginPath();
+  ctx.moveTo(lx - halfW, ly);
+  ctx.quadraticCurveTo(lx, ly - 12 - soundLevel * 6, lx + halfW, ly + lInnerDrop);
+  ctx.stroke();
+
+  const rx = eyes.right.x + lookX * 14;
+  const ry = eyes.right.y - eyes.right.r * 0.9 - (baseLift + browR) + lookY * 8 - soundLevel * 4;
+  const rInnerDrop = mood === 'Ljutito' ? 14 : (mood === 'Iznenađeno' ? -8 : 0);
+  ctx.beginPath();
+  ctx.moveTo(rx - halfW, ry + rInnerDrop);
+  ctx.quadraticCurveTo(rx, ry - 12 - soundLevel * 6, rx + halfW, ry);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawTongue(mx, baseY, tongueW, tongueH, swayX) {
+  if (tongueW <= 2 || tongueH <= 2) return;
+  ctx.save();
+  const tx = mx + swayX;
+  const ty = baseY;
+
+  ctx.beginPath();
+  ctx.moveTo(tx - tongueW * 0.5, ty);
+  ctx.quadraticCurveTo(tx - tongueW * 0.42, ty + tongueH * 0.95, tx, ty + tongueH);
+  ctx.quadraticCurveTo(tx + tongueW * 0.42, ty + tongueH * 0.95, tx + tongueW * 0.5, ty);
+  ctx.closePath();
+
+  ctx.fillStyle = '#f43f5e';
+  ctx.fill();
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = '#be123c';
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(tx, ty + tongueH * 0.12);
+  ctx.lineTo(tx, ty + tongueH * 0.72);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(136, 19, 55, 0.55)';
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawMouth(eyes) {
+  const nowMs = performance.now();
+  const voiceSway = Math.sin(nowMs * 0.025) * soundLevel * 9;
+  const tongueFlutter = Math.cos(nowMs * 0.036) * soundLevel * 7;
+  const mx = w * 0.5 + lookX * 18 + voiceSway;
+  const my = eyes.left.y + eyes.left.r * 0.98 + lookY * 10;
+  const halfW = Math.min(eyes.left.r * 0.65, 75);
+  const curve = moodLift * 28;
+  const openAmount = soundLevel * 32;
+
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = mood === 'Ljutito' ? '#ef4444' : '#f1f5f9';
+
+  ctx.beginPath();
+  if (mood === 'Iznenađeno') {
+    const rx = halfW * (0.28 + soundLevel * 0.14);
+    const ry = halfW * (0.36 + soundLevel * 0.2);
+    ctx.ellipse(mx, my + 4, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fillStyle = '#2a0b14';
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.save();
+    ctx.clip();
+    drawTongue(mx, my + ry * 0.15, rx * 1.15, ry * (0.65 + soundLevel * 0.25), tongueFlutter);
+    ctx.restore();
+  } else if (openAmount > 4) {
+    ctx.moveTo(mx - halfW * 0.85, my);
+    ctx.quadraticCurveTo(mx, my + curve * 0.35 - openAmount * 0.35, mx + halfW * 0.85, my);
+    ctx.quadraticCurveTo(mx, my + curve + openAmount, mx - halfW * 0.85, my);
+    ctx.fillStyle = '#2a0b14';
+    ctx.fill();
+
+    ctx.save();
+    ctx.clip();
+    const tongueW = halfW * (0.78 + soundLevel * 0.22);
+    const tongueH = Math.max(8, openAmount * (0.52 + soundLevel * 0.25));
+    const tongueTopY = my + curve * 0.45 + openAmount * 0.22;
+    drawTongue(mx, tongueTopY, tongueW, tongueH, tongueFlutter);
+    ctx.restore();
+
+    ctx.beginPath();
+    ctx.moveTo(mx - halfW * 0.85, my);
+    ctx.quadraticCurveTo(mx, my + curve * 0.35 - openAmount * 0.35, mx + halfW * 0.85, my);
+    ctx.quadraticCurveTo(mx, my + curve + openAmount, mx - halfW * 0.85, my);
+    ctx.stroke();
+  } else {
+    ctx.moveTo(mx - halfW, my);
+    ctx.quadraticCurveTo(mx, my + curve, mx + halfW, my);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawForehead(eyes, now, dt) {
+  const targetAlpha = now < infoVisibleUntil ? 1 : 0;
+  const rate = targetAlpha > infoAlpha ? 12 : 4;
+  infoAlpha += (targetAlpha - infoAlpha) * (1 - Math.exp(-rate * dt));
+  if (infoAlpha < 0.01) return;
+
+  const foreheadY = Math.max(54, eyes.left.y - eyes.left.r * 1.38);
+  const bigSize = Math.max(28, Math.min(44, Math.round(w * 0.06)));
+
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, Math.min(1, infoAlpha));
+  ctx.textAlign = 'center';
+  ctx.font = `700 ${bigSize}px system-ui, -apple-system, sans-serif`;
+  ctx.fillStyle = mood === 'Ljutito' ? 'rgba(248, 113, 113, 0.95)' : 'rgba(147, 197, 253, 0.95)';
+  ctx.fillText(`${formatTimeNow()}  ·  ${getTempLabel()}`, w * 0.5 + lookX * 10, foreheadY);
+  ctx.restore();
+}
+
+function loop(now) {
+  const dt = Math.min((now - prevTime) / 1000, 0.05);
+  prevTime = now;
+
+  readSound(now);
+  readMotion(now);
+  updateBottomBarVisibility(now);
+
+  if (!holdingClosed && mood !== 'Ljutito' && (now - lastInteractionAt) >= ALONE_TIMEOUT_MS) {
+    setMood('Ljutito', -0.75, true);
+  }
+
+  if (now > nextBrowAt) {
+    const mode = Math.random();
+    if (mode < 0.35) {
+      targetBrowL = (Math.random() * 2 - 1) * 22;
+    } else if (mode < 0.7) {
+      targetBrowR = (Math.random() * 2 - 1) * 22;
+    } else {
+      const shared = (Math.random() * 2 - 1) * 18;
+      targetBrowL = shared;
+      targetBrowR = shared;
+    }
+    nextBrowAt = now + 1100 + Math.random() * 2100;
+  }
+
+  if (now > nextBlinkAt && !holdingClosed) {
+    triggerBlink('both');
+    nextBlinkAt = now + 2800 + Math.random() * 3400;
+  }
+
+  if (now > nextSaccadeAt && targetX === null && !hasMotion) {
+    idleLookX = (Math.random() * 2 - 1) * 0.55;
+    idleLookY = (Math.random() * 2 - 1) * 0.45;
+    nextSaccadeAt = now + 1800 + Math.random() * 2600;
+  }
+
+  let desiredX = hasMotion ? motionLookX : idleLookX;
+  let desiredY = hasMotion ? motionLookY : idleLookY;
+  if (targetX !== null && targetY !== null) {
+    desiredX = Math.max(-1, Math.min(1, ((targetX - w * 0.5) / (w * 0.35))));
+    desiredY = Math.max(-1, Math.min(1, ((targetY - h * 0.5) / (h * 0.35))));
+  }
+
+  const smooth = 1 - Math.exp(-12 * dt);
+  lookX += (desiredX - lookX) * smooth;
+  lookY += (desiredY - lookY) * smooth;
+  browL += (targetBrowL - browL) * (1 - Math.exp(-10 * dt));
+  browR += (targetBrowR - browR) * (1 - Math.exp(-10 * dt));
+  pupilScale += (targetPupilScale - pupilScale) * (1 - Math.exp(-10 * dt));
+  moodLift += (targetMoodLift - moodLift) * (1 - Math.exp(-8 * dt));
+
+  blinkProgress = Math.max(0, blinkProgress - dt * 5.5);
+  winkLeft = Math.max(0, winkLeft - dt * 4.5);
+  winkRight = Math.max(0, winkRight - dt * 4.5);
+
+  const baseClose = holdingClosed ? 1 : (mood === 'Pospano' ? 0.42 : 0);
+  const leftClose = Math.max(baseClose, blinkProgress, winkLeft);
+  const rightClose = Math.max(baseClose, blinkProgress, winkRight);
+
+  ctx.clearRect(0, 0, w, h);
+  const eyes = getEyeCenters();
+  drawEyebrows(eyes);
+  drawEye(eyes.left.x, eyes.left.y, eyes.left.r, true, leftClose);
+  drawEye(eyes.right.x, eyes.right.y, eyes.right.r, false, rightClose);
+  drawMouth(eyes);
+  drawForehead(eyes, now, dt);
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
